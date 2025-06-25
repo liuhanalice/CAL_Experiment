@@ -1,4 +1,4 @@
-# An Experiment of Retraining GP4 with Class7
+# An Experiment of Retraining GPc with Class l
 
 ## Neural Network
 
