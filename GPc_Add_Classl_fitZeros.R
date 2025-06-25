@@ -1,3 +1,4 @@
+# When training a GP model, also include other classes' data (whose y score is around zero) to train the model
 library(lhs)
 library(wordspace)
 library(foreach)
@@ -7,23 +8,21 @@ library(dplyr)
 library(ggplot2)
 library(stats)
 
-n_tr <- 15000 # number of training data
+n_tr <- 10000 # number of training data
 n_ts <- 4000 # number of test data
 val_fac <- 0.8 # train/validation separate factor
 f <- 16 # number of features (X dimension)
 nn_tr <- 400 # number of new class data, use maximum it can be if exceeds the max
 d <- 10 # GP lengthscale
+other_class_sample_num <- 200 # total number of other class data (whose y socre is around zero) to include in training
 
 tau <- 0.90 # threshold used in objective function
 c = 4 # GP class to update
 l = 7 # new class to add to GPc
-# gamma_cl = 4.68 # optimal mean used for class l to retrain GP_{cl} (yy)
-gamma_cl = 0.6
+gamma_cl = 4.68 # optimal mean used for class l to retrain GP_{cl} (yy)
 
 directory_path <- paste0("Rdata_ntr", toString(n_tr), "_f", toString(f))
-# pdf(file = "Rplots_Option2_filteredTraining.pdf")
-pdf(file = "Rplots_Option2_filtered_sftmxTraining.pdf")
-
+pdf(file = "Rplots_Option2_filteredTraining_fitZeros.pdf")
 if (!dir.exists(directory_path)) {
   if (dir.create(directory_path)) {
     cat("Directory created successfully:", directory_path, "\n")
@@ -32,6 +31,15 @@ if (!dir.exists(directory_path)) {
   }
 } else {
   cat("Directory already exists:", directory_path, "\n")
+}
+
+# Functions
+random_select_rows <- function(mat, num_rows) {
+  if (!is.matrix(mat)) stop("Input must be a matrix")
+  if (num_rows > nrow(mat)) stop("num_rows cannot be greater than the number of rows in the matrix")
+  
+  selected_rows <- sample(nrow(mat), num_rows)
+  return(mat[selected_rows, , drop = FALSE])
 }
 
 # Store and access the data as dictionary, key is "c0, c1, ..., c9" for each class respectively
@@ -48,7 +56,7 @@ GPresult_train <- list()
 mse_train <- list()
 
 ######### Train GP0 - GP4 #########
-df <- read.csv(paste0("out/f_", toString(f), "/filtered_train_sftmx.csv"))
+df <- read.csv(paste0("out/f_", toString(f), "/filtered_train.csv"))
 set.seed(430)
 select.index <- sample(1:nrow(df), n_tr, replace = FALSE)
 train.df <- df[select.index, ]
@@ -56,23 +64,34 @@ n_train <- floor(n_tr * val_fac)
 val.df <- train.df[(n_train + 1):n_tr, ]
 train.df <- train.df[1:n_train, ]
 
+existingclass_set <- list(0, 1, 2, 3, 4)
 for (j in 1:5) {
   label <- j-1
   key <- paste0("c",label)
 
+  other_class <- as.matrix(train.df[train.df[, "label"] %in% setdiff(existingclass_set, label), ])
+  sampled_other <- random_select_rows(other_class, other_class_sample_num)
+  other_class_val <- as.matrix(val.df[val.df[, "label"] %in% setdiff(existingclass_set, label), ])
+  sampled_other_val <- random_select_rows(other_class_val, other_class_sample_num)
+
   X <- as.matrix(train.df[train.df[, "label"] == label, 1:f])
+  X <- rbind(X, sampled_other[, 1:f])
   Y <- matrix(train.df[train.df[, "label"] == label, (f + j)])
+  Y <- rbind(Y, sampled_other[, (f + j), drop = FALSE])
+
   val.X <- as.matrix(val.df[val.df[, "label"] == label, 1:f])
+  val.X <- rbind(val.X, sampled_other_val[, 1:f])
   val.Y <- matrix(val.df[val.df[, "label"] == label, (f + j)])
+  val.Y <- rbind(val.Y, sampled_other_val[, (f + j), drop = FALSE])
 
   gpisep <- newGPsep(X, Y, d = rep(d, ncol(X)), g = 1e-4, dK = TRUE)
   mleGPsep(gpisep, param="d", tmin=rep(0.5,ncol(X)), tmax=rep(50,ncol(X)))
   out <- predGPsep(gpisep, X, lite = TRUE)
   
-  all_data_X[[key]] <- X
-  all_data_Y[[key]] <- Y
-  val_data_X[[key]] <- val.X
-  val_data_Y[[key]] <- val.Y
+  all_data_X[[key]] <- as.matrix(train.df[train.df[, "label"] == label, 1:f])
+  all_data_Y[[key]] <- matrix(train.df[train.df[, "label"] == label, (f + j)])
+  val_data_X[[key]] <- as.matrix(val.df[val.df[, "label"] == label, 1:f])
+  val_data_Y[[key]] <- matrix(val.df[val.df[, "label"] == label, (f + j)])
   GPresult_train[[key]] <- out
   GPmodel_train[[key]] <- gpisep
 
@@ -82,13 +101,13 @@ for (j in 1:5) {
   print(paste0("validation MSE for class", label, ": ", mse))
   plot(val.Y, val_result$mean, ylab = "Y_pred", xlab = "Y_true")
   title(paste0("Validation True vs. Pred (class=", label, ")"))
-
+  rm(gpisep)
 }
 print("Train Finished")
 print("---------------------")
 
 ######### Prepare Test Data #########
-test.df = read.csv(paste0("out/f_", toString(f), "/test_sftmx.csv"))
+test.df = read.csv(paste0("out/f_", toString(f), "/test.csv"))
 test.df <- test.df[1:n_ts, ]
 
 for(j in 1: 10) {
@@ -139,11 +158,9 @@ GP_preds_mu <- sapply(GP_preds_mean, mean)
 GP_preds_sd <- sapply(GP_preds_mean, sd)
 
 x <- seq(-10, 15, length.out = 500)
-x <- seq(-1, 2, length.out = 500)
 density_data <- c(
     sapply(seq_along(GP_preds_mu), function(i) dnorm(x, mean = GP_preds_mu[i], sd = GP_preds_sd[i])),
-    # dnorm(x, mean = 7.3253690846, sd = 0.4514986690138651))
-    dnorm(x, mean = 0.982257763884, sd = 0.08198996354477292))
+    dnorm(x, mean = 7.3253690846, sd = 0.4514986690138651))
 data <- data.frame(
   x = rep(x, length(density_data)/ length(x)),
   density = density_data,
@@ -167,14 +184,11 @@ preds_df <- rbind(preds_df, data.frame(
   stringsAsFactors = FALSE
 ))
 histogram <- ggplot(preds_df, aes(x = score, fill = class)) +
-  geom_histogram(binwidth = 0.05, alpha = 0.7, position = "identity") +
+  geom_histogram(binwidth = 0.5, alpha = 0.7, position = "identity") +
   labs(title = paste0("GP", OPTIMAL_GP, " histogram of predGPsep scores by class (testset)"), x = "y-score", y = "Count") +
   theme_minimal() + 
-  ylim(0, 1500)
+  ylim(0, 1000)
 print(histogram)
-print("tesetset GPc distribution for first 5 classes:")
-print(GP_preds_mu)
-print(GP_preds_sd)
 print("---------------------")
 
 
@@ -191,10 +205,7 @@ for(j in 1:5){
     select_newClass <- select_newClass[indices, ]
     all_data_X[[key]] <- select_newClass[, 1:f]
     all_data_Y[[key]] <- select_newClass[, (f + label + 1), drop = FALSE]
-    if(label == l){ 
-      NNc_labell_Y <- select_newClass[, (f + c + 1), drop = FALSE]
-    }
-
+    
     select_newClass_val <- as.matrix(val.df[val.df[, "label"] == label, ])
     val_data_X[[key]] <- select_newClass_val[, 1:f]
     val_data_Y[[key]] <- select_newClass_val[, (f + label + 1), drop = FALSE]
@@ -203,7 +214,6 @@ for(j in 1:5){
     NNscores_sd[[key]] <- sd(all_data_Y[[key]])
     #print(NNscores_sd[[key]])
 }
-
 
 ######### GPc orginal  + class l with NN sd#########
 OPTIMAL_GP <- paste0("c", c)
@@ -217,8 +227,6 @@ GP_preds_mu <- sapply(GP_preds_mean, mean)
 GP_preds_sd <- sapply(GP_preds_mean, sd)
 # plot
 x <- seq(-10, 15, length.out = 500)
-x <- seq(-1, 2, length.out = 500)
-
 density_data <- c(
     sapply(seq_along(GP_preds_mu), function(i) dnorm(x, mean = GP_preds_mu[i], sd = GP_preds_sd[i])),
     dnorm(x, mean = gamma_cl, sd = NNscores_sd[[OPTIMAL_l]]))
@@ -246,14 +254,11 @@ preds_df <- rbind(preds_df, data.frame(
   stringsAsFactors = FALSE
 ))
 histogram <- ggplot(preds_df, aes(x = score, fill = class)) +
-  geom_histogram(binwidth = 0.05, alpha = 0.7, position = "identity") +
+  geom_histogram(binwidth = 0.5, alpha = 0.7, position = "identity") +
   labs(title = paste0("GP", OPTIMAL_GP, " histogram of predGPsep scores by class"), x = "y-score", y = "Count") +
   theme_minimal() + 
-  ylim(0, 1500)
+  ylim(0, 1000)
 print(histogram)
-print("training GPc distribution for first 5 classes:")
-print(GP_preds_mu)
-print(GP_preds_sd)
 
 ###
 range_df <- preds_df %>%
@@ -294,25 +299,31 @@ print(percentage_matrix)
 
 
 ######### Update GPc #########
+other_class <- as.matrix(train.df[train.df[, "label"] %in% setdiff(existingclass_set, c), ])
+sampled_other <- random_select_rows(other_class, other_class_sample_num)
+other_class_val <- as.matrix(val.df[val.df[, "label"] %in% setdiff(existingclass_set, c), ])
+sampled_other_val <- random_select_rows(other_class_val, other_class_sample_num)
+
 X_on <- as.matrix(all_data_X[[OPTIMAL_GP]])
+X_on <- rbind(X_on, sampled_other[, 1:f])
 label_on <- matrix(0, nrow = nrow(X_on), ncol = 1) # for logistic classifer, 0 = old class
 X_on <- rbind(X_on, all_data_X[[OPTIMAL_l]])
 label_on <- rbind(label_on, matrix(1, nrow = nrow(all_data_X[[OPTIMAL_l]]), ncol = 1))  # for logistic classifer, 1 = new class
 
 Y_on <- all_data_Y[[OPTIMAL_GP]]
+Y_on <- rbind(Y_on, sampled_other[, (f + c + 1), drop = FALSE])
 
 # OPTION1: new class l, Fix y = gamma_cl
 #Y_on <- rbind(Y_on, matrix(gamma_cl, nrow = nrow(all_data_X[[OPTIMAL_l]]), ncol = 1))
 
 # OPTION2: new class l, shift NN distribution to distribution with mean=gamma_cl
-Y_on <- rbind(Y_on, matrix(gamma_cl + NNc_labell_Y - mean(NNc_labell_Y), nrow = nrow(all_data_X[[OPTIMAL_l]]), ncol = 1))
+Y_on <- rbind(Y_on, matrix(gamma_cl + all_data_Y[[OPTIMAL_l]] - mean(all_data_Y[[OPTIMAL_l]]), nrow = nrow(all_data_X[[OPTIMAL_l]]), ncol = 1))
 
 gpisep <- newGPsep(X_on, Y_on, d = rep(d, ncol(X)), g = 1e-4, dK = TRUE)
 mleGPsep(gpisep, param="d", tmin=rep(0.5,ncol(X)), tmax=rep(50,ncol(X)))
 out <- predGPsep(gpisep, X_on, lite = TRUE)
 GPresult_train[[OPTIMAL_GP]] <- out
 GPmodel_train[[OPTIMAL_GP]] <- gpisep
-
 print("Retrain Finished")
 print("---------------------")
 
@@ -333,8 +344,6 @@ print(paste0("Retrained, new class l mean=", l_mu,", sd=", l_sd))
 
 # plot
 x <- seq(-10, 15, length.out = 500)
-x <- seq(-1, 2, length.out = 500)
-
 density_data <- c(
   sapply(seq_along(GP_preds_mu), function(i) dnorm(x, mean = GP_preds_mu[i], sd = GP_preds_sd[i])),
   dnorm(x, mean = l_mu, sd = l_sd)
@@ -363,10 +372,10 @@ preds_df <- rbind(preds_df, data.frame(
   class = paste0("class ", l)
 ))
 histogram <- ggplot(preds_df, aes(x = score, fill = class)) +
-  geom_histogram(binwidth = 0.05, alpha = 0.7, position = "identity") +
+  geom_histogram(binwidth = 0.5, alpha = 0.7, position = "identity") +
   labs(title = paste0("Retrained GP", OPTIMAL_GP, " histogram of predGPsep scores by class"), x = "y-score", y = "Count") +
   theme_minimal() + 
-  ylim(0, 1500)
+  ylim(0, 1000)
 print(histogram)
 
 ###
@@ -424,8 +433,6 @@ print(other_GP_preds_sd)
 
 # plot
 x <- seq(-10, 15, length.out = 500)
-x <- seq(-1, 2, length.out = 500)
-
 density_data <- c(
   sapply(seq_along(other_GP_preds_mu), function(i) dnorm(x, mean = other_GP_preds_mu[i], sd = other_GP_preds_sd[i])),
   dnorm(x, mean = l_mu_test, sd = l_sd_test)
@@ -454,10 +461,10 @@ preds_df <- rbind(preds_df, data.frame(
   class = paste0("class ", l)
 ))
 histogram <- ggplot(preds_df, aes(x = score, fill = class)) +
-  geom_histogram(binwidth = 0.05, alpha = 0.7, position = "identity") +
+  geom_histogram(binwidth = 0.5, alpha = 0.7, position = "identity") +
   labs(title = paste0("Retrained GP", OPTIMAL_GP, " histogram of predGPsep acores by class (testset)"), x = "y-score", y = "Count") +
   theme_minimal() + 
-  ylim(0, 1500)
+  ylim(0, 1000)
 print(histogram)
 
 ###

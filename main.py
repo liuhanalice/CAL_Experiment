@@ -58,19 +58,21 @@ if __name__ == "__main__":
     
     # select first 20000 training data and first 5000 test data for GP
     in_train_features, in_train_scores = train_features[0: 20000], train_scores[0:20000]
+    in_train_scores = F.softmax(in_train_scores, dim=1)
     in_train_labels = train_labels[0:20000]
     in_train_data = np.concatenate((in_train_features.cpu().numpy(), in_train_scores.cpu().numpy()),1)
     in_train_data = pd.DataFrame(in_train_data)
     in_train_data['label'] = in_train_labels
-    in_train_data.to_csv(directory + '/train.csv', index=False)
+    in_train_data.to_csv(directory + '/train_sftmx.csv', index=False)
     print("train data stored")
     
     in_test_features, in_test_scores = test_features[0:5000], test_scores[0:5000]
+    in_test_scores = F.softmax(in_test_scores, dim=1)
     in_test_labels = test_labels[0:5000]
     in_test_data = np.concatenate((in_test_features.cpu().numpy(), in_test_scores.cpu().numpy()),1)
     in_test_data = pd.DataFrame(in_test_data)
     in_test_data['label'] = in_test_labels
-    in_test_data.to_csv(directory + '/test.csv', index=False)
+    in_test_data.to_csv(directory + '/test_sftmx.csv', index=False)
     print("test data stored")
 
 
